@@ -5,3 +5,6 @@ Repo for team members to work on their own parts of the project in the same repo
 - Changes will be commited and pushed to master to ensure every group member has the most recent code changes
 - Group members should not make changes to other group member's folders
 - If one member needs to work with another member's code they should make a copy into their own folder to work with
+
+## Master folder
+There is one master folder where all finished code will be placed 
