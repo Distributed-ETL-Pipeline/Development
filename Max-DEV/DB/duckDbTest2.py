@@ -9,8 +9,10 @@ def connect_to_db(db_name="testDB.db"):
 
     return connection
 
-def query_db(connection, query):
-    return connection.execute(query).df()
+def query_db(connection, query, df=False):
+    if df:
+      return connection.execute(query).df()
+    return connection.execute(query).fetchall()
 
 def create_tables_from_csv(connection, dataset_path):
     # Get all CSV files in the dataset folder
