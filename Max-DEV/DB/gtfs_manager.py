@@ -159,7 +159,7 @@ def main():
     """
     
     # Default GTFS folder path
-    default_gtfs_folder = r"c:\Users\max.haviv\OneDrive - Jackson Healthcare\Desktop\Zeus\GTFS"
+    default_gtfs_folder = r"INSERT PATH TO GTFS FOLDER HERE" # <------------------------------------------- Add GTFS folder path here
     
     manager = GTFSManager()
     
