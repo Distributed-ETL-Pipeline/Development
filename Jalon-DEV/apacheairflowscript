@@ -1,0 +1,182 @@
+# File: dags/gtfs_duckdb_pipeline.py
+"""
+SP-112 • GTFS → DuckDB ETL (Apache Airflow)
+-------------------------------------------
+Airflow defines each ETL phase as an independent task inside a DAG and runs them
+in strict order to preserve data integrity:
+
+  Extract  : Download GTFS feed (.zip) from a live URL
+  Transform: Unzip and prepare only the files we need (stops.txt, routes.txt)
+  Load     : Insert the data into DuckDB
+  Validate : Check the results to confirm successful ingestion
+
+Scheduling, monitoring, and recovery are handled by Airflow: retries, logs,
+Graph/Grid views, and optional notifications keep the pipeline resilient and visible.
+
+REQUIRED AIRFLOW VARIABLES (Admin → Variables):
+- GTFS_FEED_URL  (e.g., https://.../gtfs.zip)
+- DUCKDB_PATH    (e.g., /home/student/sp112-airflow/include/transit.duckdb)
+"""
+
+from __future__ import annotations
+
+import io
+import os
+import zipfile
+from datetime import datetime, timedelta
+
+import pandas as pd
+import requests
+
+from airflow import DAG
+from airflow.models import Variable
+from airflow.operators.python import PythonOperator
+
+# -------------------------
+# Config & constants
+# -------------------------
+AIRFLOW_HOME = os.environ.get("AIRFLOW_HOME", "/usr/local/airflow")
+DATA_DIR     = os.path.join(AIRFLOW_HOME, "include", "data")
+NEEDED_FILES = ["stops.txt", "routes.txt"]
+
+default_args = {
+    "owner": "sp112",
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
+}
+
+# -------------------------
+# Tasks (Extract → Transform → Load → Validate)
+# -------------------------
+def make_dirs():
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+def download_gtfs(**context):
+    """
+    Data Extraction (Extract Phase)
+
+    Uses requests to download the GTFS zip from the Airflow Variable GTFS_FEED_URL.
+    Task name in DAG: download_gtfs_zip
+    """
+    GTFS_URL = Variable.get("GTFS_FEED_URL")
+    r = requests.get(GTFS_URL, timeout=60)
+    r.raise_for_status()
+    zip_bytes = io.BytesIO(r.content)
+
+    # Save timestamped file for traceability
+    ts = context["ts_nodash"]
+    out_path = os.path.join(DATA_DIR, f"gtfs_{ts}.zip")
+    with open(out_path, "wb") as f:
+        f.write(zip_bytes.getbuffer())
+
+    context["ti"].xcom_push(key="zip_path", value=out_path)
+
+def extract_selected(**context):
+    """
+    Data Transformation Phase
+
+    Unzips the downloaded feed and extracts only stops.txt and routes.txt.
+    Task name in DAG: extract_selected_files
+    """
+    zip_path = context["ti"].xcom_pull(key="zip_path")
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for name in NEEDED_FILES:
+            if name in zf.namelist():
+                zf.extract(name, DATA_DIR)
+
+def load_to_duckdb():
+    """
+    Data Loading (Load Phase)
+
+    Loads stops.txt and routes.txt into DuckDB at DUCKDB_PATH.
+    Task name in DAG: load_duckdb
+    """
+    import duckdb  # imported inside task so the DAG imports even if duckdb missing at parse time
+
+    DUCKDB_PATH = Variable.get("DUCKDB_PATH")
+    con = duckdb.connect(DUCKDB_PATH)
+
+    # Read CSVs
+    stops  = pd.read_csv(os.path.join(DATA_DIR, "stops.txt"))
+    routes = pd.read_csv(os.path.join(DATA_DIR, "routes.txt"))
+
+    # Register dataframes so we can CREATE from them
+    con.register("stops_df", stops)
+    con.register("routes_df", routes)
+
+    # Create tables if they don't exist (schema from dataframes), then replace contents
+    con.execute("CREATE TABLE IF NOT EXISTS stops  AS SELECT * FROM stops_df  LIMIT 0;")
+    con.execute("CREATE TABLE IF NOT EXISTS routes AS SELECT * FROM routes_df LIMIT 0;")
+
+    con.execute("DELETE FROM stops;")
+    con.execute("DELETE FROM routes;")
+
+    con.execute("INSERT INTO stops  SELECT * FROM stops_df;")
+    con.execute("INSERT INTO routes SELECT * FROM routes_df;")
+
+    con.close()
+
+def data_quality_check():
+    """
+    Data Validation (Quality Check)
+
+    Confirms that the DuckDB tables were populated (rowcount > 0).
+    Task name in DAG: data_quality_check
+    """
+    import duckdb
+    DUCKDB_PATH = Variable.get("DUCKDB_PATH")
+    con = duckdb.connect(DUCKDB_PATH)
+
+    n_stops  = con.execute("SELECT COUNT(*) FROM stops").fetchone()[0]
+    n_routes = con.execute("SELECT COUNT(*) FROM routes").fetchone()[0]
+
+    con.close()
+
+    assert n_stops  > 0, "No rows loaded into DuckDB table 'stops'!"
+    assert n_routes > 0, "No rows loaded into DuckDB table 'routes'!"
+
+# -------------------------
+# DAG definition
+# -------------------------
+with DAG(
+    dag_id="gtfs_duckdb_pipeline",
+    description="SP-112 • GTFS → DuckDB ETL (Extract → Transform → Load → Validate)",
+    default_args=default_args,
+    start_date=datetime(2025, 10, 1),
+    schedule_interval="@daily",   # change to "@hourly" if you need more frequent refresh
+    catchup=False,
+    max_active_runs=1,
+    tags=["sp112", "gtfs", "duckdb", "etl"],
+) as dag:
+
+    t_make_dirs = PythonOperator(
+        task_id="make_dirs",
+        python_callable=make_dirs,
+    )
+
+    # Extract
+    t_download = PythonOperator(
+        task_id="download_gtfs_zip",
+        python_callable=download_gtfs,
+    )
+
+    # Transform
+    t_extract = PythonOperator(
+        task_id="extract_selected_files",
+        python_callable=extract_selected,
+    )
+
+    # Load (DuckDB)
+    t_load_duckdb = PythonOperator(
+        task_id="load_duckdb",
+        python_callable=load_to_duckdb,
+    )
+
+    # Validate
+    t_validate = PythonOperator(
+        task_id="data_quality_check",
+        python_callable=data_quality_check,
+    )
+
+    # Order: Extract → Transform → Load → Validate
+    t_make_dirs >> t_download >> t_extract >> t_load_duckdb >> t_validate
