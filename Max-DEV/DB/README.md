@@ -1,3 +1,5 @@
+# [Click for detailed Copilot Summay](https://github.com/Distributed-ETL-Pipeline/Development/blob/main/Max-DEV/DB/DATABASE_SUMMARY.md) 
+
 ## File Structure
 
 ```
@@ -23,3 +25,4 @@ python gtfs_manager.py
 ```
 
 ## The GTFS Manager makes use of the GTFS Processor. You should not run the processor itself.
+
