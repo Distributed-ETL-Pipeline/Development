@@ -13,10 +13,10 @@ from typing import Dict, List, Optional, Tuple, Any
 import re
 
 class GTFSProcessor:
-    """Main class for processing GTFS data into DuckDB with validation and cleaning."""
+    """processes GTFS data into DuckDB"""
     
     def __init__(self, db_path: str = "gtfs_database.db"):
-        """Initialize the GTFS processor with database connection."""
+        """initialize processor with database connection"""
         self.db_path = db_path
         self.conn = duckdb.connect(db_path)
         self.setup_logging()
@@ -61,7 +61,7 @@ class GTFSProcessor:
         }
     
     def setup_logging(self):
-        """Setup logging configuration."""
+        """setup logging configuration"""
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -73,10 +73,10 @@ class GTFSProcessor:
         self.logger = logging.getLogger(__name__)
     
     def create_tables(self):
-        """Create DuckDB tables with proper schema and constraints."""
+        """create duckdb tables with schema"""
         self.logger.info("Creating database tables...")
         
-        # Drop tables if they exist to start fresh
+        # drop existing tables
         tables_to_drop = ['stop_times', 'trips', 'calendar_dates', 'shapes', 'routes', 'stops', 'calendar', 'agency']
         for table in tables_to_drop:
             try:
@@ -84,7 +84,7 @@ class GTFSProcessor:
             except:
                 pass
         
-        # Agency table
+        # agency table
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS agency (
                 agency_id VARCHAR PRIMARY KEY,
@@ -100,7 +100,7 @@ class GTFSProcessor:
             )
         """)
         
-        # Routes table (without foreign key constraint initially)
+        # routes table
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS routes (
                 route_id VARCHAR PRIMARY KEY,
@@ -118,7 +118,7 @@ class GTFSProcessor:
             )
         """)
         
-        # Stops table
+        # stops table
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS stops (
                 stop_id VARCHAR PRIMARY KEY,
@@ -140,7 +140,7 @@ class GTFSProcessor:
             )
         """)
         
-        # Calendar table
+        # calendar table
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS calendar (
                 service_id VARCHAR PRIMARY KEY,
@@ -158,7 +158,7 @@ class GTFSProcessor:
             )
         """)
         
-        # Calendar dates table
+        # calendar dates table
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS calendar_dates (
                 service_id VARCHAR NOT NULL,
@@ -170,7 +170,7 @@ class GTFSProcessor:
             )
         """)
         
-        # Trips table (without foreign key constraints initially)
+        # trips table
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS trips (
                 trip_id VARCHAR PRIMARY KEY,
@@ -188,7 +188,7 @@ class GTFSProcessor:
             )
         """)
         
-        # Stop times table (without foreign key constraints initially)
+        # stop times table
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS stop_times (
                 trip_id VARCHAR NOT NULL,
@@ -207,7 +207,7 @@ class GTFSProcessor:
             )
         """)
         
-        # Shapes table
+        # shapes table
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS shapes (
                 shape_id VARCHAR NOT NULL,
@@ -224,7 +224,7 @@ class GTFSProcessor:
         self.logger.info("Database tables created successfully")
     
     def validate_gtfs_file(self, file_path: str, file_type: str) -> Tuple[pd.DataFrame, List[str]]:
-        """Validate a GTFS file and return cleaned data with validation errors."""
+        """validate gtfs file and return cleaned data"""
         if not os.path.exists(file_path):
             return None, [f"File {file_path} does not exist"]
         
@@ -264,7 +264,7 @@ class GTFSProcessor:
             return None, errors
     
     def clean_file_data(self, df: pd.DataFrame, file_type: str) -> Tuple[pd.DataFrame, List[str]]:
-        """Clean and validate data for specific GTFS file type."""
+        """clean and validate data for specific gtfs file type"""
         errors = []
         
         if file_type == 'agency':
@@ -290,18 +290,18 @@ class GTFSProcessor:
         return df, errors
     
     def clean_agency_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Clean agency data."""
+        """clean agency data"""
         errors = []
         initial_count = len(df)
         
-        # Remove rows with missing required fields
+        # remove rows with missing required fields
         df = df.dropna(subset=['agency_id', 'agency_name', 'agency_url', 'agency_timezone'])
         
-        # Validate URLs
+        # validate urls
         url_pattern = re.compile(r'^https?://.+')
         df = df[df['agency_url'].str.match(url_pattern, na=False)]
         
-        # Clean text fields
+        # clean text fields
         df['agency_name'] = df['agency_name'].str.strip()
         
         rows_removed = initial_count - len(df)
@@ -311,50 +311,50 @@ class GTFSProcessor:
         return df, errors
     
     def clean_routes_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Clean routes data."""
+        """clean routes data"""
         errors = []
         initial_count = len(df)
         
-        # Remove rows with missing required fields (but be more lenient)
-        df = df.dropna(subset=['route_id'])  # Only require route_id
+        # remove rows with missing required fields (lenient)
+        df = df.dropna(subset=['route_id'])  # only require route_id
         
-        # Fill missing agency_id with default
+        # fill missing agency_id with default
         if 'agency_id' in df.columns:
-            df['agency_id'] = df['agency_id'].fillna('1')  # Default agency_id
+            df['agency_id'] = df['agency_id'].fillna('1')  # default agency_id
         else:
             df['agency_id'] = '1'
         
-        # Validate route type (must be integer), default to 3 (bus) if missing
+        # validate route type, default to 3 (bus)
         if 'route_type' in df.columns:
             df['route_type'] = pd.to_numeric(df['route_type'], errors='coerce')
-            df['route_type'] = df['route_type'].fillna(3)  # Default to bus
+            df['route_type'] = df['route_type'].fillna(3)  # default to bus
         else:
             df['route_type'] = 3
         
         df['route_type'] = df['route_type'].astype(int)
         
-        # Convert ID fields to strings
+        # convert id fields to strings
         if 'route_id' in df.columns:
             df['route_id'] = df['route_id'].astype(str)
         
-        # Validate colors (6-digit hex without #) - clean invalid ones instead of removing rows
+        # validate colors (6-digit hex without #)
         if 'route_color' in df.columns:
-            # Convert to string first, then validate
+            # convert to string and validate
             df['route_color'] = df['route_color'].astype(str).replace('nan', '')
             color_pattern = re.compile(r'^[0-9A-Fa-f]{6}$')
             invalid_colors = ~df['route_color'].str.match(color_pattern, na=False) | (df['route_color'] == '')
             df.loc[invalid_colors, 'route_color'] = None
         
         if 'route_text_color' in df.columns:
-            # Convert to string first, handle integers that represent colors
+            # convert to string, handle integers
             df['route_text_color'] = df['route_text_color'].astype(str).replace('nan', '')
-            # Convert integer 0 to proper hex format
+            # convert 0 to proper hex format
             df.loc[df['route_text_color'] == '0', 'route_text_color'] = '000000'
             color_pattern = re.compile(r'^[0-9A-Fa-f]{6}$')
             invalid_colors = ~df['route_text_color'].str.match(color_pattern, na=False) | (df['route_text_color'] == '')
             df.loc[invalid_colors, 'route_text_color'] = None
         
-        # Ensure route names exist
+        # ensure route names exist
         if 'route_short_name' not in df.columns:
             df['route_short_name'] = df['route_id']
         else:
@@ -372,35 +372,35 @@ class GTFSProcessor:
         return df, errors
     
     def clean_stops_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Clean stops data."""
+        """clean stops data"""
         errors = []
         initial_count = len(df)
         
-        # Remove rows with missing required fields
+        # remove rows with missing required fields
         df = df.dropna(subset=['stop_id', 'stop_name', 'stop_lat', 'stop_lon'])
         
-        # Validate coordinates
+        # validate coordinates
         df = df[(df['stop_lat'] >= -90) & (df['stop_lat'] <= 90)]
         df = df[(df['stop_lon'] >= -180) & (df['stop_lon'] <= 180)]
         
-        # Clean stop names
+        # clean stop names
         df['stop_name'] = df['stop_name'].str.strip()
         
-        # Handle numeric columns that might have NaN values
+        # handle numeric columns that might have nan values
         numeric_columns = ['wheelchair_boarding', 'location_type', 'zone_id']
         for col in numeric_columns:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Validate wheelchair boarding values (0, 1, 2)
+        # validate wheelchair boarding values (0, 1, 2)
         if 'wheelchair_boarding' in df.columns:
             df.loc[~df['wheelchair_boarding'].isin([0, 1, 2]), 'wheelchair_boarding'] = None
         
-        # Set default location_type to 0 (stop) if NaN
+        # set default location_type to 0 (stop) if nan
         if 'location_type' in df.columns:
             df['location_type'] = df['location_type'].fillna(0)
         
-        # Convert stop_id and stop_code to string to avoid integer conversion issues
+        # convert stop_id and stop_code to string
         if 'stop_id' in df.columns:
             df['stop_id'] = df['stop_id'].astype(str)
         if 'stop_code' in df.columns:
@@ -414,20 +414,20 @@ class GTFSProcessor:
         return df, errors
     
     def clean_trips_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Clean trips data."""
+        """clean trips data"""
         errors = []
         initial_count = len(df)
         
-        # Remove rows with missing required fields
+        # remove rows with missing required fields
         df = df.dropna(subset=['trip_id', 'route_id', 'service_id'])
         
-        # Convert ID fields to strings
+        # convert id fields to strings
         for col in ['trip_id', 'route_id', 'service_id', 'block_id', 'shape_id']:
             if col in df.columns:
                 df[col] = df[col].astype(str)
                 df.loc[df[col] == 'nan', col] = None
         
-        # Validate direction_id (0 or 1)
+        # validate direction_id (0 or 1)
         if 'direction_id' in df.columns:
             df['direction_id'] = pd.to_numeric(df['direction_id'], errors='coerce')
             df.loc[~df['direction_id'].isin([0, 1]), 'direction_id'] = None
@@ -439,14 +439,14 @@ class GTFSProcessor:
         return df, errors
     
     def clean_stop_times_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Clean stop times data."""
+        """clean stop times data"""
         errors = []
         initial_count = len(df)
         
-        # Remove rows with missing required fields
+        # remove rows with missing required fields
         df = df.dropna(subset=['trip_id', 'stop_id', 'stop_sequence'])
         
-        # Clean time format (HH:MM:SS, can be > 24:00:00)
+        # clean time format (hh:mm:ss, can be > 24:00:00)
         time_pattern = re.compile(r'^\d{1,2}:\d{2}:\d{2}$')
         
         if 'arrival_time' in df.columns:
@@ -455,7 +455,7 @@ class GTFSProcessor:
         if 'departure_time' in df.columns:
             df = df[df['departure_time'].str.match(time_pattern, na=False) | df['departure_time'].isna()]
         
-        # Validate stop_sequence (must be non-negative integer)
+        # validate stop_sequence (must be non-negative integer)
         df = df[df['stop_sequence'] >= 0]
         
         rows_removed = initial_count - len(df)
@@ -465,25 +465,25 @@ class GTFSProcessor:
         return df, errors
     
     def clean_calendar_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Clean calendar data."""
+        """clean calendar data"""
         errors = []
         initial_count = len(df)
         
-        # Remove rows with missing required fields
+        # remove rows with missing required fields
         required_cols = ['service_id', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'start_date', 'end_date']
         df = df.dropna(subset=required_cols)
         
-        # Validate day columns (0 or 1)
+        # validate day columns (0 or 1)
         day_cols = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
         for col in day_cols:
             df = df[df[col].isin([0, 1])]
         
-        # Validate date format (YYYYMMDD)
+        # validate date format (yyyymmdd)
         date_pattern = re.compile(r'^\d{8}$')
         df = df[df['start_date'].astype(str).str.match(date_pattern)]
         df = df[df['end_date'].astype(str).str.match(date_pattern)]
         
-        # Convert dates to proper format
+        # convert dates to proper format
         df['start_date'] = pd.to_datetime(df['start_date'].astype(str), format='%Y%m%d')
         df['end_date'] = pd.to_datetime(df['end_date'].astype(str), format='%Y%m%d')
         
@@ -494,21 +494,21 @@ class GTFSProcessor:
         return df, errors
     
     def clean_calendar_dates_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Clean calendar dates data."""
+        """clean calendar dates data"""
         errors = []
         initial_count = len(df)
         
-        # Remove rows with missing required fields
+        # remove rows with missing required fields
         df = df.dropna(subset=['service_id', 'date', 'exception_type'])
         
-        # Validate exception type (1 or 2)
+        # validate exception type (1 or 2)
         df = df[df['exception_type'].isin([1, 2])]
         
-        # Validate date format (YYYYMMDD)
+        # validate date format (yyyymmdd)
         date_pattern = re.compile(r'^\d{8}$')
         df = df[df['date'].astype(str).str.match(date_pattern)]
         
-        # Convert date to proper format
+        # convert date to proper format
         df['date'] = pd.to_datetime(df['date'].astype(str), format='%Y%m%d')
         
         rows_removed = initial_count - len(df)
@@ -518,18 +518,18 @@ class GTFSProcessor:
         return df, errors
     
     def clean_shapes_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Clean shapes data."""
+        """clean shapes data"""
         errors = []
         initial_count = len(df)
         
-        # Remove rows with missing required fields
+        # remove rows with missing required fields
         df = df.dropna(subset=['shape_id', 'shape_pt_lat', 'shape_pt_lon', 'shape_pt_sequence'])
         
-        # Validate coordinates
+        # validate coordinates
         df = df[(df['shape_pt_lat'] >= -90) & (df['shape_pt_lat'] <= 90)]
         df = df[(df['shape_pt_lon'] >= -180) & (df['shape_pt_lon'] <= 180)]
         
-        # Validate sequence (non-negative integer)
+        # validate sequence (non-negative integer)
         df = df[df['shape_pt_sequence'] >= 0]
         
         rows_removed = initial_count - len(df)
@@ -539,7 +539,7 @@ class GTFSProcessor:
         return df, errors
     
     def load_gtfs_data(self, gtfs_folder: str):
-        """Load and process all GTFS files from a folder."""
+        """load and process all gtfs files from folder"""
         self.logger.info(f"Loading GTFS data from {gtfs_folder}")
         self.validation_errors = []
         self.cleaning_stats = {}
@@ -547,7 +547,7 @@ class GTFSProcessor:
         # Create tables
         self.create_tables()
         
-        # Process files in dependency order
+        # process files in dependency order
         file_order = ['agency', 'calendar', 'routes', 'stops', 'trips', 'shapes', 'stop_times', 'calendar_dates']
         
         for file_type in file_order:
@@ -559,15 +559,15 @@ class GTFSProcessor:
                 self.logger.warning(f"Optional file {file_type}.txt not found, skipping...")
                 continue
             
-            # Validate and clean data
+            # validate and clean data
             df, errors = self.validate_gtfs_file(file_path, file_type)
             
             if df is not None and len(df) > 0:
                 try:
-                    # Clear existing data for this table
+                    # clear existing data for this table
                     self.conn.execute(f"DELETE FROM {file_type}")
                     
-                    # Insert new data using INSERT statements to avoid pandas to_sql issues
+                    # insert new data
                     self.insert_dataframe_to_table(df, file_type)
                     self.logger.info(f"Loaded {len(df)} rows into {file_type} table")
                 except Exception as e:
@@ -581,42 +581,42 @@ class GTFSProcessor:
             self.logger.info(f"Completed processing for {file_type}.txt")
             self.logger.info(f"Total time for loading {file_type}: {end_time - start_time}")
 
-        # Clean up referential integrity issues after all data is loaded
+        # clean up referential integrity after all data loaded
         self.clean_referential_integrity()
         
-        # Print summary
+        # print summary
         self.print_load_summary()
     
     def insert_dataframe_to_table(self, df: pd.DataFrame, table_name: str):
-        """Insert dataframe data using DuckDB INSERT statements."""
+        """insert dataframe using duckdb insert statements"""
         if len(df) == 0:
             return
         
-        # Replace NaN values with None for proper NULL handling
+        # replace nan values with none for proper null handling
         df_clean = df.where(pd.notnull(df), None)
         
-        # Get column names
+        # get column names
         columns = list(df_clean.columns)
         placeholders = ', '.join(['?' for _ in columns])
         column_list = ', '.join(columns)
         
         insert_sql = f"INSERT INTO {table_name} ({column_list}) VALUES ({placeholders})"
         
-        # Convert dataframe to list of tuples for insertion
+        # convert dataframe to list of tuples for insertion
         data = df_clean.values.tolist()
         
-        # Insert in batches to avoid memory issues
+        # insert in batches to avoid memory issues
         batch_size = 1000
         for i in range(0, len(data), batch_size):
             batch = data[i:i + batch_size]
             self.conn.executemany(insert_sql, batch)
     
     def clean_referential_integrity(self):
-        """Remove rows that violate referential integrity constraints."""
+        """remove rows that violate referential integrity"""
         self.logger.info("Cleaning referential integrity...")
         
         try:
-            # Count and remove trips that reference non-existent routes
+            # remove trips that reference non-existent routes
             invalid_trips = self.conn.execute("""
                 SELECT COUNT(*) FROM trips 
                 WHERE route_id NOT IN (SELECT route_id FROM routes)
@@ -629,7 +629,7 @@ class GTFSProcessor:
                 """)
                 self.logger.warning(f"Removed {invalid_trips} trips with invalid route references")
             
-            # Count and remove trips that reference non-existent services
+            # remove trips that reference non-existent services
             invalid_service_trips = self.conn.execute("""
                 SELECT COUNT(*) FROM trips 
                 WHERE service_id NOT IN (
@@ -650,7 +650,7 @@ class GTFSProcessor:
                 """)
                 self.logger.warning(f"Removed {invalid_service_trips} trips with invalid service references")
             
-            # Count and remove stop_times that reference non-existent trips
+            # remove stop_times that reference non-existent trips
             invalid_stop_times = self.conn.execute("""
                 SELECT COUNT(*) FROM stop_times 
                 WHERE trip_id NOT IN (SELECT trip_id FROM trips)
@@ -663,7 +663,7 @@ class GTFSProcessor:
                 """)
                 self.logger.warning(f"Removed {invalid_stop_times} stop_times with invalid trip references")
             
-            # Count and remove stop_times that reference non-existent stops
+            # remove stop_times that reference non-existent stops
             invalid_stop_refs = self.conn.execute("""
                 SELECT COUNT(*) FROM stop_times 
                 WHERE stop_id NOT IN (SELECT stop_id FROM stops)
@@ -680,12 +680,12 @@ class GTFSProcessor:
             self.logger.error(f"Error during referential integrity cleanup: {str(e)}")
     
     def print_load_summary(self):
-        """Print a summary of the data loading process."""
+        """print summary of data loading"""
         self.logger.info("\n" + "="*50)
         self.logger.info("GTFS DATA LOADING SUMMARY")
         self.logger.info("="*50)
         
-        # Table counts
+        # table counts
         for table in ['agency', 'routes', 'stops', 'trips', 'stop_times', 'calendar', 'calendar_dates', 'shapes']:
             try:
                 result = self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
@@ -694,7 +694,7 @@ class GTFSProcessor:
             except:
                 self.logger.info(f"{table.ljust(15)}: Table not found")
         
-        # Cleaning statistics
+        # cleaning statistics
         if self.cleaning_stats:
             self.logger.info("\nCLEANING STATISTICS:")
             for file_type, stats in self.cleaning_stats.items():
@@ -702,14 +702,301 @@ class GTFSProcessor:
                 if removed > 0:
                     self.logger.info(f"{file_type}: Removed {removed} invalid rows ({removed/stats['original_rows']*100:.1f}%)")
         
-        # Validation errors
+        # validation errors
         if self.validation_errors:
             self.logger.warning(f"\nVALIDATION ERRORS ({len(self.validation_errors)}):")
             for error in self.validation_errors:
                 self.logger.warning(f"  - {error}")
+
+    # realtime helpers
+    def create_realtime_table(self):
+        """create vehicle_positions table for realtime gtfs data"""
+        self.logger.info("Creating realtime vehicle_positions table if not exists...")
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS vehicle_positions (
+                    entity_id VARCHAR,
+                    vehicle_id VARCHAR,
+                    vehicle_label VARCHAR,
+                    trip_id VARCHAR,
+                    route_id VARCHAR,
+                    start_date VARCHAR,
+                    direction_id INTEGER,
+                    latitude DOUBLE,
+                    longitude DOUBLE,
+                    bearing DOUBLE,
+                    speed DOUBLE,
+                    current_stop_sequence INTEGER,
+                    current_status INTEGER,
+                    stop_id VARCHAR,
+                    timestamp BIGINT,
+                    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            self.logger.info("Realtime table ready")
+        except Exception as e:
+            self.logger.error(f"Error creating realtime table: {e}")
+
+    def upsert_vehicle_positions(self, records: List[Dict[str, Any]]):
+        """upsert batch of vehicle position records"""
+        if not records:
+            self.logger.info("No realtime records to upsert")
+            return
+
+
+        df = pd.DataFrame(records)
+        # Ensure correct columns exist (match create_realtime_table)
+        expected_cols = ['entity_id','vehicle_id','vehicle_label','trip_id','route_id','start_date','direction_id',
+                         'latitude','longitude','bearing','speed','current_stop_sequence','current_status','stop_id','timestamp']
+        # Keep only expected columns (if present)
+        df = df[[c for c in expected_cols if c in df.columns]]
+
+        # replace nan values with none
+        df = df.where(pd.notnull(df), None)
+
+        # delete existing rows for any entity_id in this batch
+        entity_ids = df['entity_id'].dropna().unique().tolist() if 'entity_id' in df.columns else []
+        try:
+            if entity_ids:
+                # build in-list safely by doubling single quotes
+                quoted = ",".join(["'" + str(x).replace("'", "''") + "'" for x in entity_ids])
+                self.conn.execute(f"DELETE FROM vehicle_positions WHERE entity_id IN ({quoted})")
+
+            # insert new rows
+            self.insert_dataframe_to_table(df, 'vehicle_positions')
+            self.logger.info(f"Upserted {len(df)} realtime vehicle position rows")
+        except Exception as e:
+            self.logger.error(f"Error upserting realtime records: {e}")
+
+    def get_recent_vehicle_positions(self, limit: int = 50):
+        """get recent vehicle positions ordered by timestamp"""
+        try:
+            rows = self.conn.execute(f"SELECT * FROM vehicle_positions ORDER BY timestamp DESC NULLS LAST LIMIT {int(limit)}").fetchall()
+            return rows
+        except Exception as e:
+            self.logger.error(f"Error fetching recent vehicle positions: {e}")
+            return []
+
+    def parse_vehiclepositions_bytes(self, data: bytes) -> List[Dict[str, Any]]:
+        """parse gtfs-realtime vehiclepositions protobuf bytes"""
+        try:
+            # import locally to avoid hard dependency
+            try:
+                from google.transit import gtfs_realtime_pb2  # type: ignore
+            except Exception:
+                import gtfs_realtime_pb2  # type: ignore
+            from google.protobuf.json_format import MessageToDict  # noqa: F401
+        except Exception as e:
+            raise RuntimeError("gtfs-realtime protobuf bindings not installed. Install with: pip install gtfs-realtime-bindings protobuf")
+
+        last_err = None
+        feed = gtfs_realtime_pb2.FeedMessage()
+        try:
+            feed.ParseFromString(data)
+        except Exception as e:
+            last_err = e
+            # try gzip
+            import gzip
+            try:
+                decompressed = gzip.decompress(data)
+                feed.ParseFromString(decompressed)
+            except Exception as e2:
+                raise RuntimeError(f"Failed to parse protobuf feed: {e2}")
+
+        records: List[Dict[str, Any]] = []
+        for ent in feed.entity:
+            # vehicle entity
+            if not hasattr(ent, 'vehicle') or getattr(ent, 'vehicle') is None:
+                continue
+            v = ent.vehicle
+            trip = getattr(v, 'trip', None)
+            pos = getattr(v, 'position', None)
+            veh = getattr(v, 'vehicle', None)
+
+            rec: Dict[str, Any] = {
+                'entity_id': getattr(ent, 'id', None),
+                'vehicle_id': getattr(veh, 'id', None) if veh is not None else None,
+                'vehicle_label': getattr(veh, 'label', None) if veh is not None else None,
+                'trip_id': getattr(trip, 'trip_id', None) if trip is not None else None,
+                'route_id': getattr(trip, 'route_id', None) if trip is not None else None,
+                'start_date': getattr(trip, 'start_date', None) if trip is not None else None,
+                'direction_id': getattr(trip, 'direction_id', None) if trip is not None else None,
+                'latitude': getattr(pos, 'latitude', None) if pos is not None else None,
+                'longitude': getattr(pos, 'longitude', None) if pos is not None else None,
+                'bearing': getattr(pos, 'bearing', None) if pos is not None else None,
+                'speed': getattr(pos, 'speed', None) if pos is not None else None,
+                'current_stop_sequence': getattr(v, 'current_stop_sequence', None),
+                'current_status': getattr(v, 'current_status', None),
+                'stop_id': getattr(v, 'stop_id', None),
+                'timestamp': getattr(v, 'timestamp', None)
+            }
+            records.append(rec)
+
+        return records
+        
+    def estimate_eta_for_vehicle(self, entity_id: Optional[str] = None, vehicle_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """estimate next stop, eta and delay for a vehicle"""
+        import math
+        from datetime import datetime, timedelta
+
+        if not entity_id and not vehicle_id:
+            raise ValueError('Provide entity_id or vehicle_id')
+
+        # use inline sql haversine expression
+
+        # find latest vehicle row
+        where_clause = ''
+        if entity_id:
+            where_clause = "v.entity_id = '" + str(entity_id).replace("'", "''") + "'"
+        else:
+            where_clause = "v.vehicle_id = '" + str(vehicle_id).replace("'", "''") + "'"
+
+        try:
+            # use inline sql haversine expression instead of python udf
+            distance_expr = (
+                "(6371000 * 2 * ASIN(SQRT("
+                "POWER(SIN(RADIANS(s.stop_lat - v.latitude) / 2), 2) + "
+                "COS(RADIANS(v.latitude)) * COS(RADIANS(s.stop_lat)) * "
+                "POWER(SIN(RADIANS(s.stop_lon - v.longitude) / 2), 2)"
+                ")) )"
+            )
+
+            # Use COALESCE on v.current_stop_sequence so that NULL values
+            # are treated as -1 (so stop_sequence > -1 will match sequence 0+)
+            q = f"""
+            SELECT v.entity_id, v.vehicle_id, v.trip_id, v.route_id, v.start_date, v.direction_id,
+                   v.latitude, v.longitude, v.timestamp, v.current_stop_sequence, v.speed,
+                   st.stop_id, st.stop_sequence, st.arrival_time, s.stop_lat, s.stop_lon,
+                   {distance_expr} AS distance_m
+            FROM vehicle_positions v
+            JOIN trips t ON v.trip_id = t.trip_id
+            JOIN stop_times st ON st.trip_id = t.trip_id AND st.stop_sequence > COALESCE(v.current_stop_sequence, -1)
+            JOIN stops s ON s.stop_id = st.stop_id
+            WHERE {where_clause}
+            ORDER BY st.stop_sequence ASC
+            LIMIT 1
+            """
+
+            row = self.conn.execute(q).fetchone()
+            if not row:
+                self.logger.info('No next stop found for vehicle')
+                return None
+
+            (ent_id, veh_id, trip_id, route_id, start_date, direction_id,
+             vlat, vlon, vtimestamp, current_seq, speed_m_s,
+             stop_id, stop_seq, arrival_time_str, stop_lat, stop_lon, distance_m) = row
+
+            # compute eta using speed if available and > 0
+            eta_epoch = None
+            eta_iso = None
+            if speed_m_s and speed_m_s > 0 and distance_m is not None:
+                eta_seconds = distance_m / float(speed_m_s)
+                eta_epoch = int(float(vtimestamp) + eta_seconds) if vtimestamp else None
+                if eta_epoch:
+                    eta_iso = datetime.utcfromtimestamp(eta_epoch).isoformat() + 'Z'
+
+            # compute scheduled arrival epoch by combining start_date and arrival_time
+            scheduled_epoch = None
+            scheduled_iso = None
+            try:
+                if start_date and arrival_time_str:
+                    # start_date like 20251108
+                    sd = datetime.strptime(str(start_date), '%Y%m%d')
+                    # arrival_time may be >24:00:00, handle overflow
+                    parts = arrival_time_str.split(':')
+                    hh = int(parts[0])
+                    mm = int(parts[1])
+                    ss = int(parts[2])
+                    days_add = hh // 24
+                    hh = hh % 24
+                    scheduled_local = datetime(sd.year, sd.month, sd.day, hh, mm, ss) + timedelta(days=days_add)
+
+                    # determine agency timezone
+                    agency_tz = None
+                    try:
+                        if route_id:
+                            tz_row = self.conn.execute(
+                                "SELECT a.agency_timezone FROM agency a JOIN routes r ON a.agency_id = r.agency_id WHERE r.route_id = ? LIMIT 1",
+                                [route_id]
+                            ).fetchone()
+                            if tz_row:
+                                agency_tz = tz_row[0]
+                        if not agency_tz:
+                            # fallback: take first agency timezone
+                            tz_row = self.conn.execute("SELECT agency_timezone FROM agency LIMIT 1").fetchone()
+                            if tz_row:
+                                agency_tz = tz_row[0]
+                    except Exception:
+                        agency_tz = None
+
+                    # convert local scheduled time to utc epoch
+                    try:
+                        # prefer zoneinfo (python 3.9+), fallback to pytz
+                        try:
+                            from zoneinfo import ZoneInfo
+                            tz = ZoneInfo(agency_tz) if agency_tz else None
+                            if tz:
+                                scheduled_aware = scheduled_local.replace(tzinfo=tz)
+                                scheduled_utc = scheduled_aware.astimezone(tz=datetime.timezone.utc)
+                            else:
+                                # treat as naive local, assume utc
+                                scheduled_utc = scheduled_local
+                        except Exception:
+                            # fallback to pytz
+                            import pytz
+                            if agency_tz:
+                                tz = pytz.timezone(agency_tz)
+                                scheduled_aware = tz.localize(scheduled_local)
+                                scheduled_utc = scheduled_aware.astimezone(pytz.utc)
+                            else:
+                                scheduled_utc = scheduled_local
+
+                        # handle naive utc if couldn't localize
+                        if scheduled_utc.tzinfo is None:
+                            # treat as utc
+                            scheduled_epoch = int(scheduled_utc.timestamp())
+                            scheduled_iso = scheduled_utc.isoformat() + 'Z'
+                        else:
+                            scheduled_epoch = int(scheduled_utc.timestamp())
+                            scheduled_iso = scheduled_utc.isoformat()
+                    except Exception as e:
+                        self.logger.warning(f'could not convert scheduled time to utc: {e}')
+                        scheduled_epoch = None
+                        scheduled_iso = None
+            except Exception as e:
+                self.logger.warning(f'could not parse scheduled arrival time: {e}')
+
+            delay_s = None
+            if eta_epoch and scheduled_epoch:
+                delay_s = eta_epoch - scheduled_epoch
+            elif vtimestamp and scheduled_epoch and not eta_epoch:
+                # fallback: use vehicle timestamp as actual time
+                delay_s = int(vtimestamp) - scheduled_epoch
+
+            result = {
+                'entity_id': ent_id,
+                'vehicle_id': veh_id,
+                'trip_id': trip_id,
+                'route_id': route_id,
+                'next_stop_id': stop_id,
+                'next_stop_sequence': stop_seq,
+                'distance_m': distance_m,
+                'eta_epoch': eta_epoch,
+                'eta_iso': eta_iso,
+                'scheduled_epoch': scheduled_epoch,
+                'scheduled_iso': scheduled_iso,
+                'delay_s': delay_s,
+                'vehicle_timestamp': vtimestamp,
+                'speed_m_s': speed_m_s
+            }
+
+            return result
+        except Exception as e:
+            self.logger.error(f'Error estimating ETA: {e}')
+            return None
     
     def get_database_stats(self) -> Dict[str, Any]:
-        """Get comprehensive database statistics."""
+        """get comprehensive database statistics"""
         stats = {}
         
         tables = ['agency', 'routes', 'stops', 'trips', 'stop_times', 'calendar', 'calendar_dates', 'shapes']
@@ -724,22 +1011,19 @@ class GTFSProcessor:
         return stats
     
     def update_gtfs_data(self, gtfs_folder: str):
-        """
-            Update the database with new GTFS data (full replacement).
-            TODO: Implement incremental updates if needed.
-        """
+        """update database with new gtfs data (full replacement)"""
         start_time = datetime.now()
         self.logger.info(f"Starting GTFS data update at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         
         # Load new data
-        self.load_gtfs_data(gtfs_folder)
+        self.load_gtfs_data(gtfs_folder) # <-- This currently does a full replacement. 
         
         end_time = datetime.now()
         self.logger.info(f"GTFS data update completed at {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
         self.logger.info(f"Total update duration: {end_time - start_time}")
 
     def close(self):
-        """Close the database connection."""
+        """close database connection"""
         if self.conn:
             self.conn.close()
             self.logger.info("Database connection closed")
