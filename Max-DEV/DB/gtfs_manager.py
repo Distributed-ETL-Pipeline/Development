@@ -460,11 +460,49 @@ def main():
                     continue
                 
                 print(f"Found {len(txt_files)} GTFS files in {folder}")
-                
-                if os.path.exists(folder):
-                    manager.initial_load(folder)
-                else:
-                    print(f"Folder not found: {folder}")
+
+                # If the discovered .txt files are inside a subdirectory,
+                # load from that directory instead of the user-supplied root.
+                try:
+                    parents = list({str(Path(f).parent) for f in txt_files})
+                    # prefer a parent directory that contains several expected GTFS files
+                    expected = [
+                        'agency.txt', 'routes.txt', 'stops.txt', 'trips.txt', 'stop_times.txt',
+                        'calendar.txt', 'calendar_dates.txt', 'shapes.txt'
+                    ]
+                    best_parent = None
+                    best_count = -1
+                    for p in parents:
+                        try:
+                            cnt = sum(1 for ef in expected if Path(p, ef).exists())
+                        except Exception:
+                            cnt = 0
+                        if cnt > best_count:
+                            best_count = cnt
+                            best_parent = p
+
+                    if best_parent and best_count > 0:
+                        load_folder = best_parent
+                        print(f"Using GTFS folder: {load_folder} (detected {best_count} core files)")
+                    else:
+                        # fallback to folder if it itself contains txt files, otherwise first parent
+                        if any(str(Path(folder)) == p or Path(folder).resolve() == Path(p).resolve() for p in parents):
+                            load_folder = folder
+                        else:
+                            load_folder = parents[0]
+                            print(f"Multiple GTFS locations found; using: {load_folder}")
+
+                    if os.path.exists(load_folder):
+                        # require explicit confirmation for destructive full reload
+                        confirm = input("Type \"I am sure I want to reload all data\" to confirm destructive reload: ").strip()
+                        if confirm != "I am sure I want to reload all data":
+                            print("Reload aborted by user.")
+                            continue
+                        manager.initial_load(load_folder)
+                    else:
+                        print(f"Folder not found: {load_folder}")
+                except Exception as e:
+                    print(f"Error determining GTFS folder: {e}")
             
             elif choice == "2":
                 folder = input("GTFS folder path (or press Enter to search current directory): ").strip()
@@ -483,11 +521,46 @@ def main():
                     continue
                 
                 print(f"Found {len(txt_files)} GTFS files in {folder}")
-                
-                if os.path.exists(folder):
-                    manager.update_data(folder)
-                else:
-                    print(f"Folder not found: {folder}")
+
+                # Determine the folder containing the GTFS .txt files and use it for update
+                try:
+                    parents = list({str(Path(f).parent) for f in txt_files})
+                    expected = [
+                        'agency.txt', 'routes.txt', 'stops.txt', 'trips.txt', 'stop_times.txt',
+                        'calendar.txt', 'calendar_dates.txt', 'shapes.txt'
+                    ]
+                    best_parent = None
+                    best_count = -1
+                    for p in parents:
+                        try:
+                            cnt = sum(1 for ef in expected if Path(p, ef).exists())
+                        except Exception:
+                            cnt = 0
+                        if cnt > best_count:
+                            best_count = cnt
+                            best_parent = p
+
+                    if best_parent and best_count > 0:
+                        load_folder = best_parent
+                        print(f"Using GTFS folder: {load_folder} (detected {best_count} core files)")
+                    else:
+                        if any(str(Path(folder)) == p or Path(folder).resolve() == Path(p).resolve() for p in parents):
+                            load_folder = folder
+                        else:
+                            load_folder = parents[0]
+                            print(f"Multiple GTFS locations found; using: {load_folder}")
+
+                    if os.path.exists(load_folder):
+                        # require explicit confirmation for destructive full update
+                        confirm = input("Type \"I am sure I want to reload all data\" to confirm destructive reload: ").strip()
+                        if confirm != "I am sure I want to reload all data":
+                            print("Update aborted by user.")
+                            continue
+                        manager.update_data(load_folder)
+                    else:
+                        print(f"Folder not found: {load_folder}")
+                except Exception as e:
+                    print(f"Error determining GTFS folder: {e}")
             
             elif choice == "3":
                 manager.show_stats()
