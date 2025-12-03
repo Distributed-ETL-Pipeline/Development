@@ -609,7 +609,7 @@ def realtime_menu(manager: GTFSManager):
             print("REALTIME (vehicle positions) MENU")
             print("="*40)
             print("1. Initialize/create realtime vehicle_positions table")
-            print("2. Ingest vehiclepositions.pb into realtime table")
+            print("2. Ingest vehiclepositions.pb and push to MotherDuck")
             print("3. Estimate ETA and delay for a vehicle")
             print("4. Show recent vehicle positions")
             print("5. Vehicles with longest delays")
@@ -623,62 +623,38 @@ def realtime_menu(manager: GTFSManager):
                 manager.processor.create_realtime_table()
 
             elif choice == '2':
-                # find .pb files in GTFS folder
-                gtfs_folder = input("GTFS folder path (or press Enter to search current directory): ").strip()
-                if not gtfs_folder:
-                    gtfs_folder = "."
+                # Download latest vehiclepositions.pb from API and ingest
+                import requests
                 
-                gtfs_path = Path(gtfs_folder)
-                if not gtfs_path.exists():
-                    print(f"Folder not found: {gtfs_folder}")
-                    continue
+                feed_url = "https://gtfs-rt.itsmarta.com/TMGTFSRealTimeWebService/vehicle/vehiclepositions.pb"
+                pb_file = Path("GTFS") / "vehiclepositions.pb"
                 
-                pb_files = list(gtfs_path.glob("*.pb")) + list(gtfs_path.glob("**/*.pb"))
-                pb_files = list(set(pb_files))  # remove duplicates
-                
-                if not pb_files:
-                    print(f"No .pb files found in {gtfs_folder}")
-                    continue
-                
-                if len(pb_files) == 1:
-                    pb_path = pb_files[0]
-                    print(f"Found: {pb_path}")
-                else:
-                    print("Multiple .pb files found:")
-                    for i, f in enumerate(pb_files, 1):
-                        print(f"{i}. {f}")
-                    try:
-                        choice_pb = int(input("Select file (number): ").strip())
-                        if 1 <= choice_pb <= len(pb_files):
-                            pb_path = pb_files[choice_pb - 1]
-                        else:
-                            print("Invalid selection")
-                            continue
-                    except ValueError:
-                        print("Invalid input")
-                        continue
-                
-                if not pb_path.exists():
-                    print(f"File not found: {pb_path}")
-                    continue
-
-                # read and parse the feed
                 try:
-                    with open(pb_path, 'rb') as fh:
-                        data = fh.read()
-                    records = manager.processor.parse_vehiclepositions_bytes(data)
+                    # Create GTFS folder if it doesn't exist
+                    pb_file.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Download latest feed
+                    print(f"Downloading latest vehicle positions from API...")
+                    response = requests.get(feed_url, timeout=30)
+                    response.raise_for_status()
+                    
+                    # Save to file (overwrite if exists)
+                    with open(pb_file, 'wb') as f:
+                        f.write(response.content)
+                    print(f"Saved to {pb_file}")
+                    
+                    # Ingest the downloaded data
+                    manager.processor.create_realtime_table()
+                    records = manager.processor.parse_vehiclepositions_bytes(response.content)
+                    if not records:
+                        print("No records parsed from feed")
+                        continue
+                    manager.processor.upsert_vehicle_positions(records)
+                    print(f"Ingested {len(records)} vehicle positions and pushed to MotherDuck")
+                except requests.exceptions.RequestException as e:
+                    print(f"Error downloading feed: {e}")
                 except Exception as e:
-                    print(f"Failed to parse feed: {e}")
-                    continue
-
-                if not records:
-                    print("No vehicle entities found in feed.")
-                    continue
-
-                # ensure table exists and upsert
-                manager.processor.create_realtime_table()
-                manager.processor.upsert_vehicle_positions(records)
-                print(f"Ingested {len(records)} vehicle position records from {pb_path.name}")
+                    print(f"Error ingesting vehiclepositions: {e}")
 
             elif choice == '3':
                 ident = input("Enter entity_id or vehicle_id (prefix with 'v:' for vehicle_id, or press Enter to abort): ").strip()
@@ -943,7 +919,9 @@ def realtime_menu(manager: GTFSManager):
                     print("No results or error occurred")
             
             elif choice == '9':
-                break
+                # Back to main menu
+                return
+            
             else:
                 print("Invalid option. Please select 1-9.")
 

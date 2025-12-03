@@ -1,8 +1,3 @@
-"""
-GTFS Data Processor for DuckDB
-A comprehensive system for loading, validating, and cleaning GTFS data into DuckDB.
-"""
-
 import duckdb
 import pandas as pd
 import os
@@ -12,11 +7,23 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 import re
 
+def load_env_file(env_path: str = ".env"):
+    """load environment variables from .env file"""
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        os.environ[key.strip()] = value.strip()
+
 class GTFSProcessor:
     """processes GTFS data into DuckDB"""
     
     def __init__(self, db_path: str = "gtfs_database.db"):
         """initialize processor with database connection"""
+        load_env_file()
         self.db_path = db_path
         self.conn = duckdb.connect(db_path)
         self.setup_logging()
@@ -765,8 +772,63 @@ class GTFSProcessor:
             # insert new rows
             self.insert_dataframe_to_table(df, 'vehicle_positions')
             self.logger.info(f"Upserted {len(df)} realtime vehicle position rows")
+            
+            # push to motherduck after successful upsert
+            self.push_vehicle_positions_to_motherduck()
         except Exception as e:
             self.logger.error(f"Error upserting realtime records: {e}")
+
+    def push_vehicle_positions_to_motherduck(self):
+        """push vehicle_positions table to motherduck after realtime ingest"""
+        import os
+        
+        md_token = os.environ.get("MOTHERDUCK_TOKEN")
+        if not md_token:
+            self.logger.warning("MOTHERDUCK_TOKEN not set; skipping motherduck push")
+            return
+        
+        try:
+            self.logger.info("reading local vehicle_positions table...")
+            local_df = self.conn.execute("SELECT * FROM vehicle_positions").df()
+            row_count = len(local_df)
+            self.logger.info(f"read {row_count} rows from local vehicle_positions")
+            
+            self.logger.info("pushing to motherduck...")
+            # Preferred: use motherduck Python package to obtain a connected DuckDB session
+            # Use direct connection to md: (no alias)
+            md_con = duckdb.connect("md:", config={"motherduck_token": md_token, "allow_unsigned_extensions": "true"})
+            md_con.register('vehicle_positions_local', local_df)
+            md_con.execute("CREATE OR REPLACE TABLE vehicle_positions AS SELECT * FROM vehicle_positions_local")
+            
+            self.logger.info(f"successfully pushed {row_count} vehicle_positions rows to motherduck")
+            md_con.close()
+        except Exception as e:
+            self.logger.error(f"failed to push vehicle_positions to motherduck: {e}", exc_info=True)
+
+    def ingest_and_push_vehiclepositions(self, pb_file_path: str) -> int:
+        """Parse a local GTFS-Realtime vehiclepositions .pb file, upsert, and push to MotherDuck.
+
+        Returns number of records ingested. Only affects the `vehicle_positions` table.
+        """
+        try:
+            if not os.path.exists(pb_file_path):
+                raise FileNotFoundError(f"vehiclepositions file not found: {pb_file_path}")
+
+            self.create_realtime_table()
+
+            with open(pb_file_path, 'rb') as f:
+                data = f.read()
+
+            records = self.parse_vehiclepositions_bytes(data)
+            if not records:
+                self.logger.info("No records parsed from feed; nothing to upsert")
+                return 0
+
+            self.upsert_vehicle_positions(records)
+            return len(records)
+        except Exception as e:
+            self.logger.error(f"Failed ingest-and-push for vehiclepositions: {e}")
+            return 0
 
     def get_recent_vehicle_positions(self, limit: int = 50):
         """get recent vehicle positions ordered by timestamp"""
