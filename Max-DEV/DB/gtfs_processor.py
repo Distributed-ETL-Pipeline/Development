@@ -761,17 +761,14 @@ class GTFSProcessor:
         # replace nan values with none
         df = df.where(pd.notnull(df), None)
 
-        # delete existing rows for any entity_id in this batch
-        entity_ids = df['entity_id'].dropna().unique().tolist() if 'entity_id' in df.columns else []
         try:
-            if entity_ids:
-                # build in-list safely by doubling single quotes
-                quoted = ",".join(["'" + str(x).replace("'", "''") + "'" for x in entity_ids])
-                self.conn.execute(f"DELETE FROM vehicle_positions WHERE entity_id IN ({quoted})")
+            # Clear entire table for fresh snapshot (realtime data should only show current positions)
+            self.conn.execute("DELETE FROM vehicle_positions")
+            self.logger.info("Cleared vehicle_positions table for fresh snapshot")
 
             # insert new rows
             self.insert_dataframe_to_table(df, 'vehicle_positions')
-            self.logger.info(f"Upserted {len(df)} realtime vehicle position rows")
+            self.logger.info(f"Inserted {len(df)} realtime vehicle position rows")
             
             # push to motherduck after successful upsert
             self.push_vehicle_positions_to_motherduck()
@@ -779,7 +776,7 @@ class GTFSProcessor:
             self.logger.error(f"Error upserting realtime records: {e}")
 
     def push_vehicle_positions_to_motherduck(self):
-        """push vehicle_positions table to motherduck after realtime ingest"""
+        """push enriched vehicle_positions with calculated fields to motherduck"""
         import os
         
         md_token = os.environ.get("MOTHERDUCK_TOKEN")
@@ -788,19 +785,140 @@ class GTFSProcessor:
             return
         
         try:
-            self.logger.info("reading local vehicle_positions table...")
-            local_df = self.conn.execute("SELECT * FROM vehicle_positions").df()
-            row_count = len(local_df)
-            self.logger.info(f"read {row_count} rows from local vehicle_positions")
+            self.logger.info("creating enriched vehicle positions with calculated fields...")
             
-            self.logger.info("pushing to motherduck...")
-            # Preferred: use motherduck Python package to obtain a connected DuckDB session
-            # Use direct connection to md: (no alias)
+            # Create enriched query with joins and calculations
+            enriched_query = """
+            WITH next_stop_calc AS (
+                SELECT 
+                    vp.entity_id,
+                    vp.vehicle_id,
+                    vp.vehicle_label,
+                    vp.trip_id,
+                    vp.route_id,
+                    vp.start_date,
+                    vp.direction_id,
+                    vp.latitude,
+                    vp.longitude,
+                    vp.bearing,
+                    vp.speed,
+                    vp.current_stop_sequence,
+                    vp.current_status,
+                    vp.stop_id as current_stop_id,
+                    vp.timestamp,
+                    vp.ingested_at,
+                    -- Join with routes for route info
+                    r.route_short_name,
+                    r.route_long_name,
+                    r.route_type,
+                    -- Join with trips for additional trip info
+                    t.trip_headsign,
+                    t.direction_id as trip_direction,
+                    -- Calculate next stop info
+                    st.stop_id as next_stop_id,
+                    st.stop_sequence as next_stop_sequence,
+                    st.arrival_time as next_stop_scheduled_arrival,
+                    st.departure_time as next_stop_scheduled_departure,
+                    s.stop_name as next_stop_name,
+                    s.stop_lat as next_stop_lat,
+                    s.stop_lon as next_stop_lon,
+                    -- Calculate distance to next stop (Haversine formula in meters)
+                    ROUND(
+                        6371000 * 2 * ASIN(SQRT(
+                            POWER(SIN(RADIANS(s.stop_lat - vp.latitude) / 2), 2) + 
+                            COS(RADIANS(vp.latitude)) * COS(RADIANS(s.stop_lat)) * 
+                            POWER(SIN(RADIANS(s.stop_lon - vp.longitude) / 2), 2)
+                        ))
+                    , 1) AS distance_to_next_stop_m,
+                    -- Calculate ETA in minutes (distance / speed)
+                    ROUND(
+                        CASE 
+                            WHEN vp.speed > 0 THEN 
+                                (6371000 * 2 * ASIN(SQRT(
+                                    POWER(SIN(RADIANS(s.stop_lat - vp.latitude) / 2), 2) + 
+                                    COS(RADIANS(vp.latitude)) * COS(RADIANS(s.stop_lat)) * 
+                                    POWER(SIN(RADIANS(s.stop_lon - vp.longitude) / 2), 2)
+                                ))) / NULLIF(vp.speed, 0) / 60
+                            ELSE NULL
+                        END
+                    , 1) AS eta_minutes,
+                    -- Speed in km/h for readability
+                    ROUND(vp.speed * 3.6, 1) as speed_kmh,
+                    ROW_NUMBER() OVER (PARTITION BY vp.entity_id ORDER BY st.stop_sequence ASC) AS rn
+                FROM vehicle_positions vp
+                LEFT JOIN trips t ON vp.trip_id = t.trip_id
+                LEFT JOIN routes r ON vp.route_id = r.route_id
+                LEFT JOIN stop_times st ON t.trip_id = st.trip_id 
+                    AND st.stop_sequence > COALESCE(vp.current_stop_sequence, -1)
+                LEFT JOIN stops s ON st.stop_id = s.stop_id
+            )
+            SELECT 
+                entity_id,
+                vehicle_id,
+                vehicle_label,
+                trip_id,
+                route_id,
+                route_short_name,
+                route_long_name,
+                CASE route_type
+                    WHEN 0 THEN 'Tram/Light Rail'
+                    WHEN 1 THEN 'Subway/Metro'
+                    WHEN 2 THEN 'Rail'
+                    WHEN 3 THEN 'Bus'
+                    WHEN 4 THEN 'Ferry'
+                    WHEN 5 THEN 'Cable Tram'
+                    WHEN 6 THEN 'Aerial Lift'
+                    WHEN 7 THEN 'Funicular'
+                    ELSE 'Unknown'
+                END as vehicle_type,
+                trip_headsign,
+                direction_id,
+                latitude,
+                longitude,
+                bearing,
+                speed,
+                speed_kmh,
+                current_stop_sequence,
+                CASE current_status
+                    WHEN 0 THEN 'Incoming'
+                    WHEN 1 THEN 'Stopped'
+                    WHEN 2 THEN 'In Transit'
+                    ELSE 'Unknown'
+                END as current_status_text,
+                current_stop_id,
+                next_stop_id,
+                next_stop_name,
+                next_stop_sequence,
+                next_stop_scheduled_arrival,
+                next_stop_scheduled_departure,
+                next_stop_lat,
+                next_stop_lon,
+                distance_to_next_stop_m,
+                eta_minutes,
+                CASE 
+                    WHEN eta_minutes IS NULL THEN 'No Data'
+                    WHEN eta_minutes < 0 THEN 'Early'
+                    WHEN eta_minutes BETWEEN 0 AND 2 THEN 'On Time'
+                    WHEN eta_minutes BETWEEN 2 AND 5 THEN 'Slightly Late'
+                    WHEN eta_minutes BETWEEN 5 AND 15 THEN 'Late'
+                    ELSE 'Very Late'
+                END as delay_status,
+                timestamp,
+                ingested_at
+            FROM next_stop_calc
+            WHERE rn = 1 OR rn IS NULL
+            """
+            
+            enriched_df = self.conn.execute(enriched_query).df()
+            row_count = len(enriched_df)
+            self.logger.info(f"created enriched dataset with {row_count} rows")
+            
+            self.logger.info("pushing enriched data to motherduck...")
             md_con = duckdb.connect("md:", config={"motherduck_token": md_token, "allow_unsigned_extensions": "true"})
-            md_con.register('vehicle_positions_local', local_df)
-            md_con.execute("CREATE OR REPLACE TABLE vehicle_positions AS SELECT * FROM vehicle_positions_local")
+            md_con.register('vehicle_positions_enriched', enriched_df)
+            md_con.execute("CREATE OR REPLACE TABLE vehicle_positions AS SELECT * FROM vehicle_positions_enriched")
             
-            self.logger.info(f"successfully pushed {row_count} vehicle_positions rows to motherduck")
+            self.logger.info(f"successfully pushed {row_count} enriched vehicle_positions rows to motherduck")
             md_con.close()
         except Exception as e:
             self.logger.error(f"failed to push vehicle_positions to motherduck: {e}", exc_info=True)
