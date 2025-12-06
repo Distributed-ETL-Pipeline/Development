@@ -913,12 +913,16 @@ class GTFSProcessor:
             row_count = len(enriched_df)
             self.logger.info(f"created enriched dataset with {row_count} rows")
             
-            self.logger.info("pushing enriched data to motherduck...")
+            self.logger.info("pushing enriched data to shared MotherDuck database ETL_Realtime...")
             md_con = duckdb.connect("md:", config={"motherduck_token": md_token, "allow_unsigned_extensions": "true"})
+            
+            # Switch to the shared database
+            md_con.execute("USE ETL_Realtime")
+            
             md_con.register('vehicle_positions_enriched', enriched_df)
             md_con.execute("CREATE OR REPLACE TABLE vehicle_positions AS SELECT * FROM vehicle_positions_enriched")
             
-            self.logger.info(f"successfully pushed {row_count} enriched vehicle_positions rows to motherduck")
+            self.logger.info(f"successfully pushed {row_count} enriched vehicle_positions rows to ETL_Realtime.vehicle_positions")
             md_con.close()
         except Exception as e:
             self.logger.error(f"failed to push vehicle_positions to motherduck: {e}", exc_info=True)
